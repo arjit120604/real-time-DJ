@@ -1,29 +1,24 @@
-import express from 'express';
 import http from 'http';
-import { Server as SocketIOServer } from 'socket.io';
-import { Socket } from 'socket.io';
+import { Server } from 'socket.io';
+import app from './app'; // Import the configured Express app
+import { initSocketServer } from './sockets';
+import config from './config';
 
-const app = express();
-const server = http.createServer(app);
-const io = new SocketIOServer(server, {
+const httpServer = http.createServer(app);
+
+const io = new Server(httpServer, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
+    origin: '*', // Allow all origins for now
+    methods: ['GET', 'POST'],
+  },
 });
 
-app.get('/', (req, res) => {
-  res.send('Hello from Express + Socket.IO!');
-});
+// Initialize all the socket event listeners
+initSocketServer(io);
 
-io.on('connection', (socket: Socket) => {
-  console.log('A user connected:', socket.id);
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-  });
-});
+const PORT = config.PORT || 3001;
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
