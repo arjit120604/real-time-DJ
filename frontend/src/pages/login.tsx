@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,14 +11,29 @@ export default function LoginPage() {
   const passwordRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { login } = useAuth();
+  const [error, setError] = useState<string>("");
+  const [isLoading, setIsLoading] = useState(false);
 
   const handleLogin = async () => {
     const username = usernameRef.current?.value || "";
     const password = passwordRef.current?.value || "";
 
-    if (username.trim() && password.trim()) {
+    if (!username.trim() || !password.trim()) {
+      setError("Please enter both username and password");
+      return;
+    }
+
+    setIsLoading(true);
+    setError("");
+
+    try {
       await login(username, password);
       navigate("/");
+    } catch (error: any) {
+      console.error("Login failed:", error);
+      setError(error.response?.data?.message || "Login failed. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -55,13 +70,17 @@ export default function LoginPage() {
                 ref={passwordRef}
               />
             </div>
+            {error && (
+              <div className="text-red-500 text-sm text-center">
+                {error}
+              </div>
+            )}
             <Button
               onClick={handleLogin}
+              disabled={isLoading}
               className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
-              // disabled={!usernameRef.current.trim() && !passwordRef.current.trim()}
-
             >
-              Log In
+              {isLoading ? "Logging in..." : "Log In"}
             </Button>
             <div className="text-center text-sm text-gray-600">
               Don't have an account?{" "}

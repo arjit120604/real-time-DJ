@@ -19,7 +19,7 @@ export default function HomePage() {
     const roomName = roomNameRef.current?.value || "";
     if (roomName.trim()) {
       try {
-        const response = await api.post("/rooms/rooms", { name: roomName.trim() });
+        const response = await api.post("/rooms/rooms", { id: roomName.trim() });
         const newRoomId = response.data.id;
         navigate(`/room/${newRoomId}`);
       } catch (error) {

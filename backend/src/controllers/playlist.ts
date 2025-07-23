@@ -31,7 +31,7 @@ export const addSongToPlaylist = async (roomId: string, videoId: string): Promis
 
     // 3. Add the song to the Redis Sorted Set with an initial score of 0
     await redis.zadd(PLAYLIST_KEY(roomId), 0, song.id);
-
+    console.log("done");
     return song;
 };
 
@@ -72,6 +72,7 @@ export const getPlaylist = async (roomId: string): Promise<Song[]> => {
     // Logic to parse this data and return an array of Song objects with scores.
     const songs: SongWithScore[] = [];
 
+    console.log(playlistData);
     // 2. Parse the zrange result
     for (let i = 0; i < playlistData.length; i += 2) {
         const songId = playlistData[i];
@@ -83,6 +84,7 @@ export const getPlaylist = async (roomId: string): Promise<Song[]> => {
             songs.push({ ...song, score });
         }
     }
+    console.log(songs);
     return songs;
 }
 export const getNextSong = async (roomId: string) => {

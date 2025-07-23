@@ -13,7 +13,6 @@ const io = new Server(httpServer, {
   },
 });
 
-// Initialize all the socket event listeners
 initSocketServer(io);
 
 const PORT = config.PORT || 3001;

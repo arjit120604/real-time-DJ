@@ -4,9 +4,11 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { Music, Users, ThumbsUp, Plus, Copy, Check, ArrowLeft, Play, Pause } from "lucide-react"
-import { Link, useParams } from "react-router-dom"
+import { Music, Users, ThumbsUp, Plus, Copy, Check, ArrowLeft, Play, Pause, SkipForward } from "lucide-react"
+import { Link, useParams, useNavigate } from "react-router-dom"
 import { socket } from '@/lib/io'
+import { useAuth } from '@/contexts/authContext'
+import YouTubePlayer from '@/components/YouTubePlayer'
 
 interface Song {
   id: string
@@ -25,7 +27,9 @@ interface User {
 
 export default function RoomPage() {
   const params = useParams()
+  const navigate = useNavigate()
   const roomId = params.roomId as string
+  const { isAuthenticated, user } = useAuth()
 
   const [songs, setSongs] = useState<Song[]>([])
   const [newSongUrl, setNewSongUrl] = useState("")
@@ -33,6 +37,16 @@ export default function RoomPage() {
   const [copied, setCopied] = useState(false)
   const [currentlyPlaying, setCurrentlyPlaying] = useState<Song | null>(null)
   const [isPlaying, setIsPlaying] = useState(true)
+  const [playbackStartTime, setPlaybackStartTime] = useState<number | null>(null)
+  const [seekToTime, setSeekToTime] = useState<number | undefined>(undefined)
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!isAuthenticated) {
+      navigate('/login')
+      return
+    }
+  }, [isAuthenticated, navigate])
 
   const transformSong = useCallback((song: any): Song => ({
     id: song.id,
@@ -46,56 +60,158 @@ export default function RoomPage() {
 
 
   useEffect(() => {
-    const userId = 'user-' + Date.now();
-    socket.emit('joinRoom', { roomId, userId })
+    if (!user) return; // Don't join room if user is not available
 
-    socket.on('roomState', (state) => {
-      const transformedSongs = state.playlist.map(transformSong);
-      setSongs(transformedSongs);
-      setConnectedUsers(state.users.map((id: string) => ({ id, username: `User-${id.substring(0, 4)}` })));
-      if (state.currentSong) {
-        setCurrentlyPlaying(transformSong(state.currentSong));
+    console.log('Joining room:', roomId, 'with user:', user.username);
+    
+    // Test socket connection first
+    socket.emit('joinRoom', { roomId, userId: user.id, username: user.username });
+    
+    // Add timeout to detect if roomState is not received
+    let roomStateTimeout: NodeJS.Timeout;
+    roomStateTimeout = setTimeout(() => {
+      console.error('No roomState received within 5 seconds - possible connection issue');
+      // Try rejoining
+      socket.emit('joinRoom', { roomId, userId: user.id, username: user.username });
+    }, 5000);
+
+    socket.on('roomState', (state: any) => {
+      if (roomStateTimeout) clearTimeout(roomStateTimeout); // Clear the timeout since we received roomState
+      console.log('Received roomState:', {
+        playlistLength: state.playlist?.length || 0,
+        userCount: state.users?.length || 0,
+        currentSong: state.currentSong?.title || 'none',
+        isPlaying: state.isPlaying
+      });
+      
+      if (state.playlist && Array.isArray(state.playlist)) {
+        const transformedSongs = state.playlist.map(transformSong);
+        console.log('Setting songs:', transformedSongs);
+        setSongs(transformedSongs);
       } else {
+        console.log('No playlist in roomState or playlist is not an array');
+        setSongs([]);
+      }
+      
+      if (state.users && Array.isArray(state.users)) {
+        setConnectedUsers(state.users.map((user: any) => ({ id: user.id, username: user.username })));
+      } else {
+        console.log('No users in roomState or users is not an array');
+        setConnectedUsers([]);
+      }
+      
+      if (state.currentSong) {
+        console.log('Setting currently playing:', state.currentSong);
+        setCurrentlyPlaying(transformSong(state.currentSong));
+        setIsPlaying(state.isPlaying !== false); // Default to true if not specified
+        
+        // Set playback start time for sync
+        if (state.isPlaying && state.playbackStartUtc) {
+          setPlaybackStartTime(state.playbackStartUtc);
+        } else if (!state.isPlaying && state.pausedAt) {
+          // If paused, use the paused position directly
+          setPlaybackStartTime(Date.now() - state.pausedAt);
+        } else if (state.playbackStartUtc) {
+          setPlaybackStartTime(state.playbackStartUtc);
+        }
+        
+        // Set exact playback time for immediate sync when joining
+        if (state.currentPlaybackTime !== undefined) {
+          setSeekToTime(state.currentPlaybackTime);
+          // Clear seekToTime after a short delay to avoid repeated seeks
+          setTimeout(() => setSeekToTime(undefined), 100);
+        }
+      } else {
+        console.log('No current song in roomState');
         setCurrentlyPlaying(null);
+        setPlaybackStartTime(null);
+        setIsPlaying(false);
       }
     });
 
-    socket.on('playlistUpdated', (playlist) => {
+    socket.on('playlistUpdated', (playlist: any[]) => {
+      console.log('Received playlistUpdated:', playlist);
       const transformedSongs = playlist.map(transformSong);
+      console.log('Transformed songs:', transformedSongs);
       setSongs(transformedSongs)
     })
 
-    socket.on('playNewSong', (data) => {
+    socket.on('playNewSong', (data: any) => {
+      console.log('Received playNewSong event:', data);
       if (data && data.song) {
-        setCurrentlyPlaying(transformSong(data.song));
-        setIsPlaying(true);
+        const transformedSong = transformSong(data.song);
+        console.log('Setting currently playing to:', transformedSong);
+        setCurrentlyPlaying(transformedSong);
+        setIsPlaying(data.isPlaying !== false);
+
+        // Set playback start time for sync
+        if (data.playbackStartUtc) {
+          setPlaybackStartTime(data.playbackStartUtc);
+        }
+
+        // Remove the currently playing song from the queue if it exists
+        setSongs(prevSongs => {
+          const filteredSongs = prevSongs.filter(song => song.id !== transformedSong.id);
+          console.log('Filtered songs after removing currently playing:', filteredSongs);
+          return filteredSongs;
+        });
       } else {
         setCurrentlyPlaying(null);
+        setPlaybackStartTime(null);
       }
     });
 
-    socket.on('userJoined', (user) => {
+    socket.on('playbackStateChanged', (data: any) => {
+      console.log('Received playbackStateChanged event:', data);
+      setIsPlaying(data.isPlaying);
+      if (data.playbackStartUtc) {
+        setPlaybackStartTime(data.playbackStartUtc);
+      }
+      // Set the exact playback time for sync when pause/resume happens
+      if (data.currentPlaybackTime !== undefined) {
+        setSeekToTime(data.currentPlaybackTime);
+        // Clear seekToTime after a short delay to avoid repeated seeks
+        setTimeout(() => setSeekToTime(undefined), 100);
+      }
+    });
+
+    socket.on('noSongAvailable', () => {
+      setCurrentlyPlaying(null);
+      setIsPlaying(false);
+      setPlaybackStartTime(null);
+    });
+
+    socket.on('userJoined', (user: any) => {
       setConnectedUsers((prev) => [...prev, { id: user.userId, username: user.username }]);
     });
 
-    socket.on('userLeft', ({ userId }) => {
+    socket.on('userLeft', ({ userId }: { userId: string }) => {
       setConnectedUsers((prev) => prev.filter((u) => u.id !== userId));
     });
 
-    socket.on('error', (error) => {
+    socket.on('usersUpdated', (users: any[]) => {
+      setConnectedUsers(users);
+    });
+
+    socket.on('error', (error: any) => {
       console.error('Socket error:', error.message)
       alert('Error: ' + error.message)
     })
 
     return () => {
+      console.log('Leaving room:', roomId);
+      socket.emit('leaveRoom', { roomId, userId: user?.id });
       socket.off('roomState');
       socket.off('playlistUpdated');
       socket.off('playNewSong');
+      socket.off('playbackStateChanged');
+      socket.off('noSongAvailable');
       socket.off('userJoined');
       socket.off('userLeft');
+      socket.off('usersUpdated');
       socket.off('error');
     }
-  }, [roomId, transformSong])
+  }, [roomId, transformSong, user])
 
   const copyRoomLink = async () => {
     const roomLink = `${window.location.origin}/room/${roomId}`
@@ -112,13 +228,14 @@ export default function RoomPage() {
 
   const addSong = () => {
     if (!newSongUrl.trim()) return
-    
+
     const videoId = extractVideoId(newSongUrl)
     if (!videoId) {
       alert('Please enter a valid YouTube URL')
       return
     }
-    
+
+    console.log('Emitting addSong:', { roomId, videoId })
     socket.emit('addSong', { roomId, videoId })
     setNewSongUrl("")
   }
@@ -132,19 +249,23 @@ export default function RoomPage() {
   }
 
   const togglePlayPause = () => {
-    setIsPlaying(!isPlaying)
-    // If we are pausing, and we are at the end of the song, we should probably play the next one.
-    // This logic can be improved, for now, we just toggle.
-    // A better approach would be to use the YouTube player API to detect when a song ends.
-    // For now, let's assume clicking "play" after it's paused and finished goes to next.
-    if (!isPlaying) {
-        // Let's assume the user wants the next song if they click play when paused.
-        // This is a simplification.
-        handleNextSong();
-    }
+    // Send toggle request to server for sync across all users
+    socket.emit('togglePlayPause', { roomId, isPlaying: !isPlaying })
   }
 
   const sortedSongs = [...songs].sort((a, b) => b.votes - a.votes)
+
+  // Calculate current playback position for sync (memoized to prevent constant recalculation)
+  const [syncStartTime, setSyncStartTime] = useState<number>(0)
+  
+  useEffect(() => {
+    if (playbackStartTime) {
+      const elapsedMs = Date.now() - playbackStartTime
+      setSyncStartTime(Math.max(0, Math.floor(elapsedMs / 1000)))
+    } else {
+      setSyncStartTime(0)
+    }
+  }, [playbackStartTime, currentlyPlaying?.id]) // Only recalculate when playback starts or song changes
 
   return (
     <div className="w-screen min-h-screen bg-gradient-to-br from-purple-50 via-white to-blue-50">
@@ -218,12 +339,22 @@ export default function RoomPage() {
                     <span>Now Playing</span>
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
+                  {/* YouTube Player */}
+                  <YouTubePlayer
+                    videoId={currentlyPlaying.id}
+                    isPlaying={isPlaying}
+                    onEnd={handleNextSong}
+                    startTime={syncStartTime}
+                    seekToTime={seekToTime}
+                  />
+
+                  {/* Song Info */}
                   <div className="flex items-center space-x-4">
                     <img
                       src={currentlyPlaying.thumbnail || "/placeholder.svg"}
                       alt={currentlyPlaying.title}
-                      className="w-16 h-16 rounded-lg object-cover"
+                      className="w-12 h-12 rounded-lg object-cover"
                     />
                     <div className="flex-1 min-w-0">
                       <h3 className="font-semibold truncate">{currentlyPlaying.title}</h3>
@@ -231,7 +362,9 @@ export default function RoomPage() {
                       <p className="text-xs text-gray-500">Added by {currentlyPlaying.addedBy}</p>
                     </div>
                   </div>
-                  <div className="mt-4 flex items-center justify-center">
+
+                  {/* Controls */}
+                  <div className="flex items-center justify-center space-x-2">
                     <Button
                       onClick={togglePlayPause}
                       size="lg"
@@ -239,21 +372,29 @@ export default function RoomPage() {
                     >
                       {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
                     </Button>
+                    <Button
+                      onClick={handleNextSong}
+                      variant="outline"
+                      size="lg"
+                      className="border-purple-200 hover:bg-purple-50"
+                    >
+                      <SkipForward className="h-5 w-5" />
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
             ) : (
-                <Card className="border-2 border-gray-200">
-                    <CardHeader>
-                    <CardTitle className="flex items-center space-x-2">
-                        <Music className="h-5 w-5 text-gray-600" />
-                        <span>Nothing Playing</span>
-                    </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <p className="text-center text-gray-500">The queue is empty. Add a song to start the party!</p>
-                    </CardContent>
-                </Card>
+              <Card className="border-2 border-gray-200">
+                <CardHeader>
+                  <CardTitle className="flex items-center space-x-2">
+                    <Music className="h-5 w-5 text-gray-600" />
+                    <span>Nothing Playing</span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-center text-gray-500">The queue is empty. Add a song to start the party!</p>
+                </CardContent>
+              </Card>
             )}
 
             {/* Add Song */}
@@ -288,13 +429,13 @@ export default function RoomPage() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-2">
-                  {connectedUsers.map((user) => (
-                    <div key={user.id} className="flex items-center space-x-2">
+                  {connectedUsers.map((connectedUser) => (
+                    <div key={connectedUser.id} className="flex items-center space-x-2">
                       <div className="w-6 h-6 bg-gradient-to-r from-purple-400 to-blue-400 rounded-full flex items-center justify-center text-white text-xs font-medium">
-                        {user.username[0]}
+                        {connectedUser.username[0]}
                       </div>
-                      <span className="text-sm">{user.username}</span>
-                      {user.id.startsWith('user-') && (
+                      <span className="text-sm">{connectedUser.username}</span>
+                      {connectedUser.id === user?.id && (
                         <Badge variant="secondary" className="text-xs">
                           You
                         </Badge>

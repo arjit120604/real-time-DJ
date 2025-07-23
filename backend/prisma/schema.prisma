@@ -21,8 +21,7 @@ model User {
 }
 
 model Room {
-  id      String @id @default(uuid())
-  name    String
+  id      Int @id 
   owner   User   @relation("UserRooms", fields: [ownerId], references: [id])
   ownerId String
 }
