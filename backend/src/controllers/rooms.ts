@@ -5,7 +5,7 @@ import prisma from '../db';
 export const createRoom = async (req: AuthRequest, res: Response) => {
   try {
     const { name } = req.body;
-    const ownerId = req.user?.id || req.body.ownerId; // req.user for authenticated, fallback for testing
+    const ownerId = req.user?.userId;
     if (!name || !ownerId) {
       return res.status(400).json({ message: 'Room name and ownerId are required' });
     }

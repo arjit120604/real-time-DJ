@@ -16,20 +16,22 @@ export const addSongToPlaylist = async (roomId: string, videoId: string): Promis
     // 1. Fetch details from YouTube to ensure data is valid
     const songDetails = await getYouTubeVideoDetails(videoId);
     if (!songDetails) {
-      throw new Error('Invalid YouTube video ID or video not found.');
+        throw new Error('Invalid YouTube video ID or video not found.');
     }
-  
+
     const song: Song = {
-      id: songDetails.id,
-      title: songDetails.title,
-      durationMs: songDetails.durationMs,
-      thumbnailUrl: songDetails.thumbnailUrl
+        id: songDetails.id,
+        title: songDetails.title,
+        durationMs: songDetails.durationMs,
+        thumbnailUrl: songDetails.thumbnailUrl
     };
-  
-    // 2. Add the song to the Redis Sorted Set with an initial score of 0
-    // We store the song object as a JSON string.
+
+    // 2. Store song details in the songs hash
+    await redis.hset('songs', song.id, JSON.stringify(song));
+
+    // 3. Add the song to the Redis Sorted Set with an initial score of 0
     await redis.zadd(PLAYLIST_KEY(roomId), 0, song.id);
-  
+
     return song;
 };
 
@@ -40,19 +42,19 @@ export const voteForSong = async (roomId: string, songId: string, vote: 1 | -1):
     // OR, a better way, is to make the member string predictable.
     // Let's change the value to be `songId:songJSON`
     // For now, let's keep it simple and assume a helper function exists.
-    
+
     // Let's refine the ZADD value.
     // Instead of just JSON, let's use a unique identifier. The value will be the JSON string.
     // This is a bit complex. A simpler way: The 'member' of the sorted set IS the song's unique ID.
     // But then how do we store the title? We need a second hash.
     // Let's stick to the simplest pattern: the member is the JSON string. Finding it to update votes is slow.
-    
+
     // REVISED, BETTER PATTERN:
     // The member of the sorted set is JUST the `songId`.
     // We also store song details in a separate Redis Hash.
     // `HSET songs <songId> <songJSON>`
     // This is much more efficient.
-    
+
     // For now, let's just do the increment, assuming we can find the member.
     // This is a good example of where a simple approach has performance issues later.
     // We will refine this. For now, let's imagine this works:
@@ -83,7 +85,7 @@ export const getPlaylist = async (roomId: string): Promise<Song[]> => {
     }
     return songs;
 }
-export const getNextSong = async(roomId: string) => {
+export const getNextSong = async (roomId: string) => {
     const popped = await redis.zpopmax(PLAYLIST_KEY(roomId));
     if (!popped || popped.length < 2) return null;
 

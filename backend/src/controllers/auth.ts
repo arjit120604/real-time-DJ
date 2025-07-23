@@ -6,6 +6,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 console.log(JWT_SECRET);
 
 export const register = async (req: Request, res: Response) => {
+  console.log(req.body);
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
@@ -15,13 +16,14 @@ export const register = async (req: Request, res: Response) => {
     if (existingUser) {
       return res.status(409).json({ error: 'Username already taken' });
     }
-    const hashedPassword = await bcrypt.hash(password, 20);
+    const hashedPassword = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
       data: { username, password: hashedPassword },
     });
     const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
     res.status(201).json({ token });
   } catch (err) {
+    console.log(err);
     res.status(500).json({ error: 'Registration failed' });
   }
 };
