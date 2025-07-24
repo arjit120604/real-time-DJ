@@ -17,14 +17,14 @@ const db_1 = __importDefault(require("../db"));
 const createRoom = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
     try {
-        const { name } = req.body;
+        const { id, name } = req.body;
         const ownerId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.userId;
-        if (!name || !ownerId) {
-            return res.status(400).json({ message: 'Room name and ownerId are required' });
+        if (!id || !ownerId) {
+            return res.status(400).json({ message: 'Room ID and ownerId are required' });
         }
         const room = yield db_1.default.room.create({
             data: {
-                name,
+                id: id.toString(),
                 ownerId,
             },
         });
@@ -50,7 +50,7 @@ const listRooms = (_req, res) => __awaiter(void 0, void 0, void 0, function* () 
 exports.listRooms = listRooms;
 const deleteRoom = (roomId) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        yield db_1.default.room.delete({ where: { id: roomId } });
+        yield db_1.default.room.delete({ where: { id: roomId.toString() } });
         console.log(`Room ${roomId} deleted from database.`);
     }
     catch (error) {

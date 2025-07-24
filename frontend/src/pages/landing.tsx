@@ -2,7 +2,6 @@ import { useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Music, ThumbsUp, Share2, Play } from "lucide-react"
-import {socket} from '@/lib/io'
 
 export default function LandingPage() {
   const navigate = useNavigate()

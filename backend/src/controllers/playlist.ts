@@ -7,12 +7,14 @@ export interface Song {
     title: string;
     durationMs: number;
     thumbnailUrl: string;
+    author: string;
+    addedBy: string
 }
 
 export const PLAYLIST_KEY = (roomId: string) => `room:playlist:${roomId}`;
 
 
-export const addSongToPlaylist = async (roomId: string, videoId: string): Promise<Song> => {
+export const addSongToPlaylist = async (roomId: string, videoId: string, username: string): Promise<Song> => {
     // 1. Fetch details from YouTube to ensure data is valid
     const songDetails = await getYouTubeVideoDetails(videoId);
     if (!songDetails) {
@@ -23,7 +25,9 @@ export const addSongToPlaylist = async (roomId: string, videoId: string): Promis
         id: songDetails.id,
         title: songDetails.title,
         durationMs: songDetails.durationMs,
-        thumbnailUrl: songDetails.thumbnailUrl
+        thumbnailUrl: songDetails.thumbnailUrl,
+        author: songDetails.author,
+        addedBy: username
     };
 
     // 2. Store song details in the songs hash

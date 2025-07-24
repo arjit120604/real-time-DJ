@@ -2,7 +2,18 @@ import { Server, Socket } from 'socket.io';
 import { addUserToRoom, removeUserFromRoom, getRoomUsers } from '../controllers/socketActions';
 import { addSongToPlaylist, voteForSong, getPlaylist, PLAYLIST_KEY } from '../controllers/playlist';
 import { deleteRoom } from '../controllers/rooms';
-import { playNextSong, togglePlayPause, ROOM_STATE_KEY } from '../services/playNextSong';
+import { 
+  playNextSong, 
+  pausePlayback, 
+  resumePlayback, 
+  seekPlayback, 
+  ROOM_STATE_KEY, 
+  cleanupDeprecatedFields, 
+  getRoomState,
+  DEPRECATED_FIELDS,
+  // togglePlayPause is deprecated and will be removed once frontend is updated
+  togglePlayPause
+} from '../services/playNextSong';
 import redis from '../lib/redis';
 import prisma from '../db';
 
@@ -52,11 +63,15 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
       // Notify other users that someone joined
       socket.broadcast.to(roomId).emit('userJoined', { userId, username: userInfo.username });
 
-      // Get current room state
+      // Clean up any deprecated fields from existing room state
+      // This ensures we follow the minimal state approach (requirement 4.1, 4.2, 4.4)
+      await cleanupDeprecatedFields(roomId);
+
+      // Get current room state using the simplified interface
       const [playlist, userIds, currentSongState] = await Promise.all([
         getPlaylist(roomId),
         getRoomUsers(roomId),
-        redis.hgetall(ROOM_STATE_KEY(roomId)),
+        getRoomState(roomId),
       ]);
 
       console.log(`Room ${roomId} state:`, {
@@ -79,18 +94,11 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
       const roomState: any = { playlist, users };
       if (currentSongState && currentSongState.currentSong) {
         roomState.currentSong = JSON.parse(currentSongState.currentSong);
-        roomState.playbackStartUtc = parseInt(currentSongState.playbackStartUtc, 10);
         roomState.isPlaying = currentSongState.isPlaying === 'true';
         
-        // Calculate current playback time for sync
-        if (currentSongState.isPlaying === 'true') {
-          // If playing, calculate current position
-          const elapsedMs = Date.now() - parseInt(currentSongState.playbackStartUtc, 10);
-          roomState.currentPlaybackTime = Math.floor(elapsedMs / 1000);
-        } else if (currentSongState.pausedAt) {
-          // If paused, use the paused position
-          roomState.pausedAt = parseInt(currentSongState.pausedAt, 10);
-          roomState.currentPlaybackTime = Math.floor(parseInt(currentSongState.pausedAt, 10) / 1000);
+        // Send the absolute timestamp for client sync
+        if (currentSongState.playbackStartUtc) {
+          roomState.playbackStartUtc = parseInt(currentSongState.playbackStartUtc, 10);
         }
       }
 
@@ -107,14 +115,14 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
     }
   });
 
-  socket.on('addSong', async (payload: { roomId: string; videoId: string }) => {
-    const { roomId, videoId } = payload;
+  socket.on('addSong', async (payload: { roomId: string; videoId: string; username: string }) => {
+    const { roomId, videoId, username } = payload;
     if (!roomId || !videoId) {
       return socket.emit('error', { message: 'Room ID and Video ID are required.' });
     }
 
     try {
-      await addSongToPlaylist(roomId, videoId);
+      await addSongToPlaylist(roomId, videoId, username);
       const playlist = await getPlaylist(roomId);
       io.to(roomId).emit('playlistUpdated', playlist);
 
@@ -160,6 +168,46 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
     }
   });
 
+  socket.on('pausePlayback', async (payload: { roomId: string }) => {
+    const { roomId } = payload;
+    if (!roomId) {
+      return socket.emit('error', { message: 'Room ID is required.' });
+    }
+
+    try {
+      await pausePlayback(io, roomId);
+    } catch (error) {
+      handleError('pausePlayback', error);
+    }
+  });
+
+  socket.on('resumePlayback', async (payload: { roomId: string }) => {
+    const { roomId } = payload;
+    if (!roomId) {
+      return socket.emit('error', { message: 'Room ID is required.' });
+    }
+
+    try {
+      await resumePlayback(io, roomId);
+    } catch (error) {
+      handleError('resumePlayback', error);
+    }
+  });
+
+  socket.on('seekPlayback', async (payload: { roomId: string; seekToMs: number }) => {
+    const { roomId, seekToMs } = payload;
+    if (!roomId || typeof seekToMs !== 'number' || isNaN(seekToMs)) {
+      return socket.emit('error', { message: 'Room ID and valid seek position are required.' });
+    }
+
+    try {
+      await seekPlayback(io, roomId, seekToMs);
+    } catch (error) {
+      handleError('seekPlayback', error);
+    }
+  });
+
+  // Legacy handler for backward compatibility - will be removed once frontend is updated
   socket.on('togglePlayPause', async (payload: { roomId: string; isPlaying: boolean }) => {
     const { roomId, isPlaying } = payload;
     if (!roomId || typeof isPlaying !== 'boolean') {

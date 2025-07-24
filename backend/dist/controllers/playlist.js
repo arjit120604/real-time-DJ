@@ -17,7 +17,7 @@ const redis_1 = __importDefault(require("../lib/redis"));
 const youtube_1 = require("../lib/youtube");
 const PLAYLIST_KEY = (roomId) => `room:playlist:${roomId}`;
 exports.PLAYLIST_KEY = PLAYLIST_KEY;
-const addSongToPlaylist = (roomId, videoId) => __awaiter(void 0, void 0, void 0, function* () {
+const addSongToPlaylist = (roomId, videoId, username) => __awaiter(void 0, void 0, void 0, function* () {
     // 1. Fetch details from YouTube to ensure data is valid
     const songDetails = yield (0, youtube_1.getYouTubeVideoDetails)(videoId);
     if (!songDetails) {
@@ -27,7 +27,9 @@ const addSongToPlaylist = (roomId, videoId) => __awaiter(void 0, void 0, void 0,
         id: songDetails.id,
         title: songDetails.title,
         durationMs: songDetails.durationMs,
-        thumbnailUrl: songDetails.thumbnailUrl
+        thumbnailUrl: songDetails.thumbnailUrl,
+        author: songDetails.author,
+        addedBy: username
     };
     // 2. Store song details in the songs hash
     yield redis_1.default.hset('songs', song.id, JSON.stringify(song));

@@ -34,7 +34,13 @@ const register = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             data: { username, password: hashedPassword },
         });
         const token = jsonwebtoken_1.default.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-        res.status(201).json({ token });
+        res.status(201).json({
+            token,
+            user: {
+                id: user.id,
+                username: user.username
+            }
+        });
     }
     catch (err) {
         console.log(err);
@@ -57,7 +63,13 @@ const login = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
         const token = jsonwebtoken_1.default.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-        res.status(200).json({ token });
+        res.status(200).json({
+            token,
+            user: {
+                id: user.id,
+                username: user.username
+            }
+        });
     }
     catch (err) {
         res.status(500).json({ error: 'Login failed' });

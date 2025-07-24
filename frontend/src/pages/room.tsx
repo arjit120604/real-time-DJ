@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { Music, Users, ThumbsUp, Plus, Copy, Check, ArrowLeft, Play, Pause, SkipForward } from "lucide-react"
+import { Music, Users, ThumbsUp, Plus, Copy, Check, ArrowLeft, Play, Pause, SkipForward, RotateCcw, RotateCw } from "lucide-react"
 import { Link, useParams, useNavigate } from "react-router-dom"
 import { socket } from '@/lib/io'
 import { useAuth } from '@/contexts/authContext'
@@ -29,7 +29,7 @@ export default function RoomPage() {
   const params = useParams()
   const navigate = useNavigate()
   const roomId = params.roomId as string
-  const { isAuthenticated, user } = useAuth()
+  const { isAuthenticated, user, isLoading } = useAuth()
 
   const [songs, setSongs] = useState<Song[]>([])
   const [newSongUrl, setNewSongUrl] = useState("")
@@ -37,24 +37,25 @@ export default function RoomPage() {
   const [copied, setCopied] = useState(false)
   const [currentlyPlaying, setCurrentlyPlaying] = useState<Song | null>(null)
   const [isPlaying, setIsPlaying] = useState(true)
-  const [playbackStartTime, setPlaybackStartTime] = useState<number | null>(null)
-  const [seekToTime, setSeekToTime] = useState<number | undefined>(undefined)
+  const [playbackStartUtc, setPlaybackStartUtc] = useState<number | null>(null)
+  const [isSeekingFeedback, setIsSeekingFeedback] = useState(false)
+  const [seekFeedbackMessage, setSeekFeedbackMessage] = useState('')
 
-  // Redirect to login if not authenticated
+  // Redirect to login if not authenticated (but only after loading is complete)
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isLoading && !isAuthenticated) {
       navigate('/login')
       return
     }
-  }, [isAuthenticated, navigate])
+  }, [isAuthenticated, isLoading, navigate])
 
   const transformSong = useCallback((song: any): Song => ({
     id: song.id,
     title: song.title,
-    artist: 'Unknown Artist', // Backend doesn't have artist field
+    artist: song.author, // Backend doesn't have artist field
     url: `https://youtube.com/watch?v=${song.id}`,
     votes: song.score || 0,
-    addedBy: 'User', // Backend doesn't have this, might need to add later
+    addedBy: song.addedBy, // Backend doesn't have this, might need to add later
     thumbnail: song.thumbnailUrl || "/placeholder.svg?height=60&width=60"
   }), []);
 
@@ -63,10 +64,10 @@ export default function RoomPage() {
     if (!user) return; // Don't join room if user is not available
 
     console.log('Joining room:', roomId, 'with user:', user.username);
-    
+
     // Test socket connection first
     socket.emit('joinRoom', { roomId, userId: user.id, username: user.username });
-    
+
     // Add timeout to detect if roomState is not received
     let roomStateTimeout: NodeJS.Timeout;
     roomStateTimeout = setTimeout(() => {
@@ -83,7 +84,7 @@ export default function RoomPage() {
         currentSong: state.currentSong?.title || 'none',
         isPlaying: state.isPlaying
       });
-      
+
       if (state.playlist && Array.isArray(state.playlist)) {
         const transformedSongs = state.playlist.map(transformSong);
         console.log('Setting songs:', transformedSongs);
@@ -92,39 +93,27 @@ export default function RoomPage() {
         console.log('No playlist in roomState or playlist is not an array');
         setSongs([]);
       }
-      
+
       if (state.users && Array.isArray(state.users)) {
         setConnectedUsers(state.users.map((user: any) => ({ id: user.id, username: user.username })));
       } else {
         console.log('No users in roomState or users is not an array');
         setConnectedUsers([]);
       }
-      
+
       if (state.currentSong) {
         console.log('Setting currently playing:', state.currentSong);
         setCurrentlyPlaying(transformSong(state.currentSong));
         setIsPlaying(state.isPlaying !== false); // Default to true if not specified
-        
+
         // Set playback start time for sync
-        if (state.isPlaying && state.playbackStartUtc) {
-          setPlaybackStartTime(state.playbackStartUtc);
-        } else if (!state.isPlaying && state.pausedAt) {
-          // If paused, use the paused position directly
-          setPlaybackStartTime(Date.now() - state.pausedAt);
-        } else if (state.playbackStartUtc) {
-          setPlaybackStartTime(state.playbackStartUtc);
-        }
-        
-        // Set exact playback time for immediate sync when joining
-        if (state.currentPlaybackTime !== undefined) {
-          setSeekToTime(state.currentPlaybackTime);
-          // Clear seekToTime after a short delay to avoid repeated seeks
-          setTimeout(() => setSeekToTime(undefined), 100);
+        if (state.playbackStartUtc) {
+          setPlaybackStartUtc(state.playbackStartUtc);
         }
       } else {
         console.log('No current song in roomState');
         setCurrentlyPlaying(null);
-        setPlaybackStartTime(null);
+        setPlaybackStartUtc(null);
         setIsPlaying(false);
       }
     });
@@ -146,7 +135,7 @@ export default function RoomPage() {
 
         // Set playback start time for sync
         if (data.playbackStartUtc) {
-          setPlaybackStartTime(data.playbackStartUtc);
+          setPlaybackStartUtc(data.playbackStartUtc);
         }
 
         // Remove the currently playing song from the queue if it exists
@@ -157,28 +146,23 @@ export default function RoomPage() {
         });
       } else {
         setCurrentlyPlaying(null);
-        setPlaybackStartTime(null);
+        setPlaybackStartUtc(null);
       }
     });
 
     socket.on('playbackStateChanged', (data: any) => {
       console.log('Received playbackStateChanged event:', data);
       setIsPlaying(data.isPlaying);
+      // Update playback start time when resuming
       if (data.playbackStartUtc) {
-        setPlaybackStartTime(data.playbackStartUtc);
-      }
-      // Set the exact playback time for sync when pause/resume happens
-      if (data.currentPlaybackTime !== undefined) {
-        setSeekToTime(data.currentPlaybackTime);
-        // Clear seekToTime after a short delay to avoid repeated seeks
-        setTimeout(() => setSeekToTime(undefined), 100);
+        setPlaybackStartUtc(data.playbackStartUtc);
       }
     });
 
     socket.on('noSongAvailable', () => {
       setCurrentlyPlaying(null);
       setIsPlaying(false);
-      setPlaybackStartTime(null);
+      setPlaybackStartUtc(null);
     });
 
     socket.on('userJoined', (user: any) => {
@@ -236,7 +220,8 @@ export default function RoomPage() {
     }
 
     console.log('Emitting addSong:', { roomId, videoId })
-    socket.emit('addSong', { roomId, videoId })
+    console.log(user?.username);
+    socket.emit('addSong', { roomId, videoId, username: user?.username || "" })
     setNewSongUrl("")
   }
 
@@ -245,27 +230,74 @@ export default function RoomPage() {
   }
 
   const handleNextSong = () => {
+    console.log(currentlyPlaying);
     socket.emit('playNextSong', { roomId });
+
   }
 
   const togglePlayPause = () => {
-    // Send toggle request to server for sync across all users
-    socket.emit('togglePlayPause', { roomId, isPlaying: !isPlaying })
+    // Use new pausePlayback/resumePlayback events for better sync
+    if (isPlaying) {
+      socket.emit('pausePlayback', { roomId })
+    } else {
+      socket.emit('resumePlayback', { roomId })
+    }
+  }
+
+  const handleSeek = (seekToMs: number) => {
+    console.log('User seeking to:', seekToMs, 'ms')
+
+    // Show seeking feedback
+    const minutes = Math.floor(seekToMs / 60000)
+    const seconds = Math.floor((seekToMs % 60000) / 1000)
+    const timeString = `${minutes}:${seconds.toString().padStart(2, '0')}`
+
+    setIsSeekingFeedback(true)
+    setSeekFeedbackMessage(`Seeking to ${timeString}...`)
+
+    socket.emit('seekPlayback', { roomId, seekToMs })
+
+    // Clear feedback after a short delay
+    setTimeout(() => {
+      setIsSeekingFeedback(false)
+      setSeekFeedbackMessage('')
+    }, 2000)
+  }
+
+  // Helper function to get current playback position for seeking controls
+  const getCurrentPosition = (): number => {
+    if (!playbackStartUtc || !isPlaying) return 0
+    return Math.max(0, (Date.now() - playbackStartUtc) / 1000)
+  }
+
+  // Seeking control functions
+  const handleSeekBackward = () => {
+    const currentPos = getCurrentPosition()
+    const newPos = Math.max(0, currentPos - 10) // Seek back 10 seconds
+    handleSeek(newPos * 1000) // Convert to milliseconds
+  }
+
+  const handleSeekForward = () => {
+    const currentPos = getCurrentPosition()
+    const newPos = currentPos + 10 // Seek forward 10 seconds
+    handleSeek(newPos * 1000) // Convert to milliseconds
   }
 
   const sortedSongs = [...songs].sort((a, b) => b.votes - a.votes)
 
-  // Calculate current playback position for sync (memoized to prevent constant recalculation)
-  const [syncStartTime, setSyncStartTime] = useState<number>(0)
-  
-  useEffect(() => {
-    if (playbackStartTime) {
-      const elapsedMs = Date.now() - playbackStartTime
-      setSyncStartTime(Math.max(0, Math.floor(elapsedMs / 1000)))
-    } else {
-      setSyncStartTime(0)
-    }
-  }, [playbackStartTime, currentlyPlaying?.id]) // Only recalculate when playback starts or song changes
+  // Show loading screen while auth is being validated
+  if (isLoading) {
+    return (
+      <div className="w-screen min-h-screen bg-gradient-to-br from-purple-50 via-white to-blue-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="bg-gradient-to-r from-purple-600 to-blue-600 p-4 rounded-lg mb-4 inline-block">
+            <div className="h-8 w-8 border-4 border-white border-t-transparent rounded-full animate-spin"></div>
+          </div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="w-screen min-h-screen bg-gradient-to-br from-purple-50 via-white to-blue-50">
@@ -345,8 +377,8 @@ export default function RoomPage() {
                     videoId={currentlyPlaying.id}
                     isPlaying={isPlaying}
                     onEnd={handleNextSong}
-                    startTime={syncStartTime}
-                    seekToTime={seekToTime}
+                    playbackStartUtc={playbackStartUtc || undefined}
+                    onSeek={handleSeek}
                   />
 
                   {/* Song Info */}
@@ -363,23 +395,61 @@ export default function RoomPage() {
                     </div>
                   </div>
 
+                  {/* Seeking Feedback */}
+                  {isSeekingFeedback && (
+                    <div className="text-center py-2">
+                      <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                        {seekFeedbackMessage}
+                      </Badge>
+                    </div>
+                  )}
+
                   {/* Controls */}
-                  <div className="flex items-center justify-center space-x-2">
-                    <Button
-                      onClick={togglePlayPause}
-                      size="lg"
-                      className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
-                    >
-                      {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-                    </Button>
-                    <Button
-                      onClick={handleNextSong}
-                      variant="outline"
-                      size="lg"
-                      className="border-purple-200 hover:bg-purple-50"
-                    >
-                      <SkipForward className="h-5 w-5" />
-                    </Button>
+                  <div className="space-y-3">
+                    {/* Seeking Controls */}
+                    <div className="flex items-center justify-center space-x-2">
+                      <Button
+                        onClick={handleSeekBackward}
+                        variant="outline"
+                        size="sm"
+                        disabled={!currentlyPlaying || !isPlaying}
+                        className="border-purple-200 hover:bg-purple-50"
+                        title="Seek backward 10 seconds"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                        <span className="ml-1 text-xs">10s</span>
+                      </Button>
+                      <Button
+                        onClick={handleSeekForward}
+                        variant="outline"
+                        size="sm"
+                        disabled={!currentlyPlaying || !isPlaying}
+                        className="border-purple-200 hover:bg-purple-50"
+                        title="Seek forward 10 seconds"
+                      >
+                        <RotateCw className="h-4 w-4" />
+                        <span className="ml-1 text-xs">10s</span>
+                      </Button>
+                    </div>
+
+                    {/* Main Controls */}
+                    <div className="flex items-center justify-center space-x-2">
+                      <Button
+                        onClick={togglePlayPause}
+                        size="lg"
+                        className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                      >
+                        {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+                      </Button>
+                      <Button
+                        onClick={handleNextSong}
+                        variant="outline"
+                        size="lg"
+                        className="border-purple-200 hover:bg-purple-50"
+                      >
+                        <SkipForward className="h-5 w-5" />
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

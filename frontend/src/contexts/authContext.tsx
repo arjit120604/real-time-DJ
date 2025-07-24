@@ -9,6 +9,7 @@ type User = {
 type AuthContextType = {
   isAuthenticated: boolean;
   user: User | null;
+  isLoading: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
 };
@@ -18,23 +19,40 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Check for existing token on mount
+  // Check for existing token and validate it on mount
   useEffect(() => {
-    const token = localStorage.getItem('jwt');
-    const storedUser = localStorage.getItem('user');
+    const validateToken = async () => {
+      const token = localStorage.getItem('jwt');
+      const storedUser = localStorage.getItem('user');
 
-    if (token && storedUser) {
-      try {
-        const userData = JSON.parse(storedUser);
-        setUser(userData);
-        setIsAuthenticated(true);
-      } catch (error) {
-        // Invalid stored data, clear it
-        localStorage.removeItem('jwt');
-        localStorage.removeItem('user');
+      if (token && storedUser) {
+        try {
+          const userData = JSON.parse(storedUser);
+          
+          // Validate token with server
+          const response = await api.get('/auth/validate');
+          
+          if (response.data.valid) {
+            setUser(userData);
+            setIsAuthenticated(true);
+          } else {
+            // Token is invalid, clear it
+            localStorage.removeItem('jwt');
+            localStorage.removeItem('user');
+          }
+        } catch (error) {
+          // Token validation failed or invalid stored data, clear it
+          localStorage.removeItem('jwt');
+          localStorage.removeItem('user');
+        }
       }
-    }
+      
+      setIsLoading(false);
+    };
+
+    validateToken();
   }, []);
 
   const login = async (username: string, password: string): Promise<void> => {
@@ -42,20 +60,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       const res = await api.post('/auth/login', { username, password });
       console.log('Login response:', res.data); // Debug log
       
-      if (res.data.token) {
+      if (res.data.token && res.data.user) {
         localStorage.setItem('jwt', res.data.token);
-        
-        // If backend doesn't return user object, create one from the username
-        const userData = res.data.user || { 
-          id: res.data.userId || `user-${Date.now()}`, 
-          username: username 
-        };
-        
-        localStorage.setItem('user', JSON.stringify(userData));
-        setUser(userData);
+        localStorage.setItem('user', JSON.stringify(res.data.user));
+        setUser(res.data.user);
         setIsAuthenticated(true);
       } else {
-        throw new Error('No token received from server');
+        throw new Error('Invalid response from server');
       }
     } catch (error) {
       console.error('Login error:', error);
@@ -71,7 +82,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, user, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, user, isLoading, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

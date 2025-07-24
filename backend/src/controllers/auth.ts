@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { AuthRequest } from '../middleware/auth';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../db';
@@ -21,7 +22,13 @@ export const register = async (req: Request, res: Response) => {
       data: { username, password: hashedPassword },
     });
     const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-    res.status(201).json({ token });
+    res.status(201).json({ 
+      token,
+      user: {
+        id: user.id,
+        username: user.username
+      }
+    });
   } catch (err) {
     console.log(err);
     res.status(500).json({ error: 'Registration failed' });
@@ -43,7 +50,13 @@ export const login = async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-    res.status(200).json({ token });
+    res.status(200).json({ 
+      token,
+      user: {
+        id: user.id,
+        username: user.username
+      }
+    });
   } catch (err) {
     res.status(500).json({ error: 'Login failed' });
   }
@@ -53,4 +66,12 @@ export const logout = async (req: Request, res: Response) => {
   // If using httpOnly cookies for JWT, clear the cookie
   res.clearCookie('token');
   res.status(200).json({ message: 'Logged out successfully' });
+};
+
+export const validateToken = async (req: AuthRequest, res: Response) => {
+  // If we reach this point, the token is valid (middleware already validated it)
+  res.status(200).json({ 
+    valid: true,
+    user: req.user
+  });
 };

@@ -7,6 +7,7 @@ export interface YouTubeVideoDetails {
     description: string;
     thumbnailUrl: string;
     durationMs: number;
+    author: string ;
 }
 const youtube = google.youtube({
     version: 'v3',
@@ -61,6 +62,7 @@ export const getYouTubeVideoDetails = async (
         description: video.snippet.description!,
         thumbnailUrl: video.snippet.thumbnails?.high?.url || video.snippet.thumbnails?.default?.url!,
         durationMs: parseDurationToMs(video.contentDetails.duration!),
+        author: video.snippet.channelTitle!
       };
   
       return details;

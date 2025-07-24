@@ -59,6 +59,7 @@ const getYouTubeVideoDetails = (videoId) => __awaiter(void 0, void 0, void 0, fu
             description: video.snippet.description,
             thumbnailUrl: ((_c = (_b = video.snippet.thumbnails) === null || _b === void 0 ? void 0 : _b.high) === null || _c === void 0 ? void 0 : _c.url) || ((_e = (_d = video.snippet.thumbnails) === null || _d === void 0 ? void 0 : _d.default) === null || _e === void 0 ? void 0 : _e.url),
             durationMs: parseDurationToMs(video.contentDetails.duration),
+            author: video.snippet.channelTitle
         };
         return details;
     }
