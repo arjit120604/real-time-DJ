@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Music, Users, ThumbsUp, Plus, Copy, Check, ArrowLeft, Play, Pause, SkipForward, RotateCcw, RotateCw } from "lucide-react"
 import { Link, useParams, useNavigate } from "react-router-dom"
-import { socket } from '@/lib/io'
+import { socket, setRoomContext } from '@/lib/io'
 import { useAuth } from '@/contexts/authContext'
 import YouTubePlayer from '@/components/YouTubePlayer'
 
@@ -23,13 +23,14 @@ interface Song {
 interface User {
   id: string;
   username: string;
+  isGuest?: boolean;
 }
 
 export default function RoomPage() {
   const params = useParams()
   const navigate = useNavigate()
   const roomId = params.roomId as string
-  const { isAuthenticated, user, isLoading } = useAuth()
+  const { isAuthenticated, user, isGuest, isLoading } = useAuth()
 
   const [songs, setSongs] = useState<Song[]>([])
   const [newSongUrl, setNewSongUrl] = useState("")
@@ -63,13 +64,23 @@ export default function RoomPage() {
   useEffect(() => {
     if (!user) return; // Don't join room if user is not available
 
-    console.log('Joining room:', roomId, 'with user:', user.username);
+    console.log('Joining room:', roomId, 'with user:', user.username, 'isGuest:', isGuest);
+
+    // Store room context for reconnection
+    setRoomContext(roomId, user.id, user.username, isGuest);
 
     // Test socket connection first
-    socket.emit('joinRoom', { roomId, userId: user.id, username: user.username });
+    const joinPayload = {
+      roomId,
+      userId: user.id,
+      username: user.username,
+      ...(isGuest && { isGuest: true })
+    };
+    
+    socket.emit('joinRoom', joinPayload);
 
     // Add timeout to detect if roomState is not received
-    let roomStateTimeout: NodeJS.Timeout;
+    let roomStateTimeout: NodeJS.Timeout | null = null;
     roomStateTimeout = setTimeout(() => {
       console.error('No roomState received within 5 seconds - possible connection issue');
       // Try rejoining
@@ -77,7 +88,10 @@ export default function RoomPage() {
     }, 5000);
 
     socket.on('roomState', (state: any) => {
-      if (roomStateTimeout) clearTimeout(roomStateTimeout); // Clear the timeout since we received roomState
+      if (roomStateTimeout) {
+        clearTimeout(roomStateTimeout);
+        roomStateTimeout = null;
+      }
       console.log('Received roomState:', {
         playlistLength: state.playlist?.length || 0,
         userCount: state.users?.length || 0,
@@ -95,7 +109,11 @@ export default function RoomPage() {
       }
 
       if (state.users && Array.isArray(state.users)) {
-        setConnectedUsers(state.users.map((user: any) => ({ id: user.id, username: user.username })));
+        setConnectedUsers(state.users.map((user: any) => ({ 
+          id: user.id, 
+          username: user.username,
+          isGuest: user.isGuest || false
+        })));
       } else {
         console.log('No users in roomState or users is not an array');
         setConnectedUsers([]);
@@ -166,7 +184,11 @@ export default function RoomPage() {
     });
 
     socket.on('userJoined', (user: any) => {
-      setConnectedUsers((prev) => [...prev, { id: user.userId, username: user.username }]);
+      setConnectedUsers((prev) => [...prev, { 
+        id: user.userId, 
+        username: user.username,
+        isGuest: user.isGuest || false
+      }]);
     });
 
     socket.on('userLeft', ({ userId }: { userId: string }) => {
@@ -174,7 +196,11 @@ export default function RoomPage() {
     });
 
     socket.on('usersUpdated', (users: any[]) => {
-      setConnectedUsers(users);
+      setConnectedUsers(users.map((user: any) => ({
+        id: user.id,
+        username: user.username,
+        isGuest: user.isGuest || false
+      })));
     });
 
     socket.on('error', (error: any) => {
@@ -184,7 +210,17 @@ export default function RoomPage() {
 
     return () => {
       console.log('Leaving room:', roomId);
+      
+      // Clear timeout if it exists
+      if (roomStateTimeout) {
+        clearTimeout(roomStateTimeout);
+        roomStateTimeout = null;
+      }
+      
+      // Emit leave room event
       socket.emit('leaveRoom', { roomId, userId: user?.id });
+      
+      // Remove all socket event listeners
       socket.off('roomState');
       socket.off('playlistUpdated');
       socket.off('playNewSong');
@@ -331,7 +367,12 @@ export default function RoomPage() {
                   {connectedUsers.slice(0, 3).map((user) => (
                     <div
                       key={user.id}
-                      className="w-8 h-8 bg-gradient-to-r from-purple-400 to-blue-400 rounded-full flex items-center justify-center text-white text-xs font-medium border-2 border-white"
+                      className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-medium border-2 border-white ${
+                        user.isGuest 
+                          ? 'bg-gradient-to-r from-gray-400 to-gray-500' 
+                          : 'bg-gradient-to-r from-purple-400 to-blue-400'
+                      }`}
+                      title={`${user.username}${user.isGuest ? ' (Guest)' : ''}`}
                     >
                       {user.username[0]}
                     </div>
@@ -501,15 +542,26 @@ export default function RoomPage() {
                 <div className="space-y-2">
                   {connectedUsers.map((connectedUser) => (
                     <div key={connectedUser.id} className="flex items-center space-x-2">
-                      <div className="w-6 h-6 bg-gradient-to-r from-purple-400 to-blue-400 rounded-full flex items-center justify-center text-white text-xs font-medium">
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-medium ${
+                        connectedUser.isGuest 
+                          ? 'bg-gradient-to-r from-gray-400 to-gray-500' 
+                          : 'bg-gradient-to-r from-purple-400 to-blue-400'
+                      }`}>
                         {connectedUser.username[0]}
                       </div>
-                      <span className="text-sm">{connectedUser.username}</span>
-                      {connectedUser.id === user?.id && (
-                        <Badge variant="secondary" className="text-xs">
-                          You
-                        </Badge>
-                      )}
+                      <span className="text-sm flex-1">{connectedUser.username}</span>
+                      <div className="flex items-center space-x-1">
+                        {connectedUser.isGuest && (
+                          <Badge variant="outline" className="text-xs text-gray-600 border-gray-300">
+                            Guest
+                          </Badge>
+                        )}
+                        {connectedUser.id === user?.id && (
+                          <Badge variant="secondary" className="text-xs">
+                            You
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

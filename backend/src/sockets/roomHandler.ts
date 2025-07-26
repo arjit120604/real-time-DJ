@@ -16,10 +16,24 @@ import {
 } from '../services/playNextSong';
 import redis from '../lib/redis';
 import prisma from '../db';
+import { v4 as uuidv4 } from 'uuid';
 
 // A map to store room and user info for each socket.
 // For a scalable application, you'd use Redis for this.
-const socketContext = new Map<string, { roomId: string; userId: string }>();
+const socketContext = new Map<string, { roomId: string; userId: string; isGuest?: boolean }>();
+
+// Helper function to validate if a room exists in the database
+export const validateRoomExists = async (roomId: string): Promise<boolean> => {
+  try {
+    const room = await prisma.room.findUnique({
+      where: { id: roomId }
+    });
+    return !!room;
+  } catch (error) {
+    console.error('Error validating room existence:', error);
+    return false;
+  }
+};
 
 export const registerRoomHandlers = (io: Server, socket: Socket) => {
   const handleError = (handlerName: string, error: unknown) => {
@@ -28,40 +42,78 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
     socket.emit('error', { message });
   };
 
-  socket.on('joinRoom', async (payload: { roomId: string; userId: string; username?: string }) => {
-    const { roomId, userId, username } = payload;
-    if (!roomId || !userId) {
-      return socket.emit('error', { message: 'Room ID and User ID are required.' });
+  socket.on('joinRoom', async (payload: { roomId: string; userId?: string; username: string; isGuest?: boolean }) => {
+    const { roomId, userId, username, isGuest = false } = payload;
+    
+    // Validate required fields
+    if (!roomId || !username) {
+      return socket.emit('error', { 
+        message: 'Room ID and username are required.',
+        code: 'VALIDATION_ERROR'
+      });
+    }
+
+    // For registered users, userId is required
+    if (!isGuest && !userId) {
+      return socket.emit('error', { 
+        message: 'User ID is required for registered users.',
+        code: 'VALIDATION_ERROR'
+      });
     }
 
     try {
-      console.log(`User ${userId} (${username}) joining room ${roomId}`);
-      
-      socket.join(roomId);
-      socketContext.set(socket.id, { roomId, userId });
-
-      // Ensure room exists in database (create if it doesn't exist)
-      try {
-        await prisma.room.upsert({
-          where: { id: roomId },
-          update: {},
-          create: {
-            id: roomId,
-            name: `Room ${roomId}`,
-            ownerId: userId, // First user becomes owner
-          },
-        });
-      } catch (dbError) {
-        console.log('Room might already exist or DB error:', dbError);
+      // For guest users, validate that the room exists (no auto-creation)
+      if (isGuest) {
+        const roomExists = await validateRoomExists(roomId);
+        if (!roomExists) {
+          return socket.emit('error', { 
+            message: 'Room does not exist. Please check the room ID.',
+            code: 'ROOM_NOT_FOUND',
+            suggestedAction: 'TRY_DIFFERENT_ROOM'
+          });
+        }
       }
 
-      // Store user info with username in Redis
-      const userInfo = { id: userId, username: username || `User-${userId.substring(0, 8)}` };
-      await redis.hset(`room:${roomId}:users`, userId, JSON.stringify(userInfo));
-      await addUserToRoom(roomId, userId);
+      // Generate a unique ID for guest users
+      const effectiveUserId = isGuest ? `guest_${uuidv4()}` : userId!;
+      
+      console.log(`${isGuest ? 'Guest' : 'User'} ${effectiveUserId} (${username}) joining room ${roomId}`);
+      
+      socket.join(roomId);
+      socketContext.set(socket.id, { roomId, userId: effectiveUserId, isGuest });
+
+      // For registered users, ensure room exists in database (create if it doesn't exist)
+      if (!isGuest) {
+        try {
+          await prisma.room.upsert({
+            where: { id: roomId },
+            update: {},
+            create: {
+              id: roomId,
+              name: `Room ${roomId}`,
+              ownerId: userId!, // First user becomes owner
+            },
+          });
+        } catch (dbError) {
+          console.log('Room might already exist or DB error:', dbError);
+        }
+      }
+
+      // Store user info with username and guest status in Redis
+      const userInfo = { 
+        id: effectiveUserId, 
+        username, 
+        isGuest 
+      };
+      await redis.hset(`room:${roomId}:users`, effectiveUserId, JSON.stringify(userInfo));
+      await addUserToRoom(roomId, effectiveUserId);
 
       // Notify other users that someone joined
-      socket.broadcast.to(roomId).emit('userJoined', { userId, username: userInfo.username });
+      socket.broadcast.to(roomId).emit('userJoined', { 
+        userId: effectiveUserId, 
+        username: userInfo.username,
+        isGuest 
+      });
 
       // Clean up any deprecated fields from existing room state
       // This ensures we follow the minimal state approach (requirement 4.1, 4.2, 4.4)
@@ -102,7 +154,7 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
         }
       }
 
-      console.log(`Sending roomState to user ${userId}:`, {
+      console.log(`Sending roomState to user ${effectiveUserId}:`, {
         playlistLength: roomState.playlist.length,
         userCount: roomState.users.length,
         currentSong: roomState.currentSong?.title || 'none',
@@ -235,7 +287,12 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
       const remainingUsers = await getRoomUsers(roomId);
       
       if (remainingUsers.length === 0) {
-        await deleteRoom(roomId);
+        // Only delete the room from database if it was created by a registered user
+        // Guest users cannot create rooms, so we check if the room has registered users
+        const context = socketContext.get(socket.id);
+        if (context && !context.isGuest) {
+          await deleteRoom(roomId);
+        }
         await redis.del(PLAYLIST_KEY(roomId));
         await redis.del(ROOM_STATE_KEY(roomId));
         await redis.del(`room:${roomId}:users`);
@@ -249,7 +306,7 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
           if (userDataStr) {
             users.push(JSON.parse(userDataStr));
           } else {
-            users.push({ id, username: `User-${id.substring(0, 8)}` });
+            users.push({ id, username: `User-${id.substring(0, 8)}`, isGuest: false });
           }
         }
         io.to(roomId).emit('usersUpdated', users);
@@ -264,7 +321,7 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
   socket.on('disconnect', async () => {
     const context = socketContext.get(socket.id);
     if (context) {
-      const { roomId, userId } = context;
+      const { roomId, userId, isGuest } = context;
       try {
         await removeUserFromRoom(roomId, userId);
         // Remove user data from room users hash
@@ -273,8 +330,11 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
         const remainingUsers = await getRoomUsers(roomId);
 
         if (remainingUsers.length === 0) {
-          // If the room is empty, delete it from the database and clean up Redis
-          await deleteRoom(roomId);
+          // Only delete the room from database if it was created by a registered user
+          // Guest users cannot create rooms
+          if (!isGuest) {
+            await deleteRoom(roomId);
+          }
           await redis.del(PLAYLIST_KEY(roomId));
           await redis.del(ROOM_STATE_KEY(roomId));
           await redis.del(`room:${roomId}:users`);
@@ -290,14 +350,14 @@ export const registerRoomHandlers = (io: Server, socket: Socket) => {
             if (userDataStr) {
               users.push(JSON.parse(userDataStr));
             } else {
-              users.push({ id, username: `User-${id.substring(0, 8)}` });
+              users.push({ id, username: `User-${id.substring(0, 8)}`, isGuest: false });
             }
           }
           io.to(roomId).emit('usersUpdated', users);
         }
 
         socketContext.delete(socket.id);
-        console.log(`User ${userId} disconnected from room ${roomId}`);
+        console.log(`${isGuest ? 'Guest' : 'User'} ${userId} disconnected from room ${roomId}`);
       } catch (error) {
         console.error(`Error handling disconnect for user ${userId} in room ${roomId}:`, error);
       }

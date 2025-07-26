@@ -26,4 +26,28 @@ export const authenticateToken = (
     req.user = user;
     next();
   });
+};
+
+export const requireRegisteredUser = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  // First authenticate the token
+  authenticateToken(req, res, (err) => {
+    if (err) return;
+    
+    // Check if user is a guest user (guest users don't have JWT tokens, so this middleware
+    // effectively blocks them since they won't pass authenticateToken)
+    // Additional check: ensure user has userId (registered users have this)
+    if (!req.user?.userId) {
+      return res.status(403).json({ 
+        message: 'Room creation requires a registered account. Please sign up to create rooms.',
+        code: 'PERMISSION_DENIED',
+        suggestedAction: 'SIGN_UP'
+      });
+    }
+    
+    next();
+  });
 }; 
